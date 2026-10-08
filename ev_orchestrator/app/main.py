@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import asyncio
+import copy
 import json
 import logging
 import os
+from collections import deque
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -21,6 +23,45 @@ STATIC_DIR = Path(__file__).parent / "static"
 LOG_LEVEL = os.environ.get("EV_ORCH_LOG_LEVEL", "info").upper()
 logging.basicConfig(level=getattr(logging, LOG_LEVEL, logging.INFO), format="%(asctime)s %(levelname)s %(message)s")
 LOG = logging.getLogger("ev_orchestrator")
+
+LOG_BUFFER: deque[str] = deque(maxlen=500)
+
+
+class DiagnosticLogHandler(logging.Handler):
+    def emit(self, record: logging.LogRecord) -> None:
+        try:
+            LOG_BUFFER.append(self.format(record))
+        except Exception:
+            pass
+
+
+_diag_handler = DiagnosticLogHandler()
+_diag_handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s"))
+logging.getLogger().addHandler(_diag_handler)
+
+
+SENSITIVE_ATTRIBUTE_KEYS = {
+    "latitude", "longitude", "gps_accuracy", "password", "token", "access_token",
+    "refresh_token", "api_key", "secret", "client_secret"
+}
+
+
+def _redact(value: Any) -> Any:
+    if isinstance(value, dict):
+        out: dict[str, Any] = {}
+        for key, item in value.items():
+            key_l = str(key).lower()
+            if key_l in SENSITIVE_ATTRIBUTE_KEYS or any(
+                marker in key_l for marker in ("password", "token", "secret", "api_key")
+            ):
+                out[key] = "<redacted>"
+            else:
+                out[key] = _redact(item)
+        return out
+    if isinstance(value, list):
+        return [_redact(x) for x in value]
+    return value
+
 
 
 class App:
@@ -122,6 +163,73 @@ class App:
     async def index(self, request: web.Request) -> web.Response:
         return web.FileResponse(STATIC_DIR / "index.html")
 
+    def _diagnostic_entity_ids(self) -> set[str]:
+        ids = set(self._interesting_entities())
+        for item in self.snapshot.get("clever", {}).get("entities", {}).values():
+            if isinstance(item, dict) and isinstance(item.get("entity_id"), str):
+                ids.add(item["entity_id"])
+        for finding in self.audit.get("findings", []):
+            entity_id = finding.get("entity_id")
+            if isinstance(entity_id, str):
+                ids.add(entity_id)
+        keywords = (
+            "citroen", "vr7bczkxcpe005536", "lsjwx4098tn028453", "ev_smart_charging",
+            "ev_aktiv_bil", "clever", "p40_", "house_power_consumption", "watts_live_effekt"
+        )
+        for state in self.states:
+            entity_id = state.get("entity_id", "")
+            friendly = str((state.get("attributes") or {}).get("friendly_name", "")).lower()
+            haystack = (entity_id + " " + friendly).lower()
+            if any(k.lower() in haystack for k in keywords):
+                ids.add(entity_id)
+        return ids
+
+    def _diagnostic_states(self) -> list[dict[str, Any]]:
+        wanted = self._diagnostic_entity_ids()
+        output: list[dict[str, Any]] = []
+        for state in self.states:
+            if state.get("entity_id") not in wanted:
+                continue
+            output.append({
+                "entity_id": state.get("entity_id"),
+                "state": state.get("state"),
+                "last_changed": state.get("last_changed"),
+                "last_updated": state.get("last_updated"),
+                "attributes": _redact(state.get("attributes") or {}),
+            })
+        output.sort(key=lambda x: x.get("entity_id") or "")
+        return output
+
+    def diagnostic_dump(self) -> dict[str, Any]:
+        return {
+            "format": "EV Orchestrator AI diagnostic dump",
+            "format_version": 1,
+            "generated_at": self.now(),
+            "orchestrator_version": VERSION,
+            "purpose": "Troubleshooting export. Sensitive HA attributes such as tokens/passwords/GPS coordinates are redacted.",
+            "last_poll": self.last_poll,
+            "last_audit": self.last_audit,
+            "last_error": self.last_error,
+            "settings": _redact(copy.deepcopy(self.store.settings)),
+            "snapshot": _redact(copy.deepcopy(self.snapshot)),
+            "legacy_audit": _redact(copy.deepcopy(self.audit)),
+            "timeline_events": self.store.read_events(500),
+            "application_log": list(LOG_BUFFER),
+            "relevant_home_assistant_states": self._diagnostic_states(),
+        }
+
+    async def api_diagnostics(self, request: web.Request) -> web.Response:
+        payload = json.dumps(self.diagnostic_dump(), indent=2, ensure_ascii=False)
+        stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+        return web.Response(
+            text=payload,
+            content_type="application/json",
+            charset="utf-8",
+            headers={
+                "Content-Disposition": f'attachment; filename="ev-orchestrator-diagnostics-{stamp}.json"'
+            },
+        )
+
     async def api_status(self, request: web.Request) -> web.Response:
         return web.json_response({
             "version": VERSION,
@@ -144,7 +252,7 @@ class App:
         payload = await request.json()
         if payload.get("mode") not in (None, "monitor"):
             return web.json_response({
-                "error": "Version 0.3.3 er bevidst låst til Monitor mode. Control mode aktiveres først efter live-validering og legacy-audit er ren."
+                "error": "Version 0.3.4 er bevidst låst til Monitor mode. Control mode aktiveres først efter live-validering og legacy-audit er ren."
             }, status=400)
         self.store.save_settings(payload)
         self.snapshot = build_snapshot(self.states, self.store.settings)
@@ -179,6 +287,7 @@ async def make_app() -> web.Application:
     app["controller"] = controller
     app.router.add_get("/", controller.index)
     app.router.add_get("/api/status", controller.api_status)
+    app.router.add_get("/api/diagnostics", controller.api_diagnostics)
     app.router.add_post("/api/refresh", controller.api_refresh)
     app.router.add_get("/api/settings", controller.api_settings_get)
     app.router.add_post("/api/settings", controller.api_settings_post)
