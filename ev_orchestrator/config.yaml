@@ -1,5 +1,5 @@
 name: EV Orchestrator
-version: "0.3.6"
+version: "0.3.7"
 slug: ev_orchestrator
 description: >-
   Central monitor, audit and future controller for Citroën/MG charging in Home Assistant.
