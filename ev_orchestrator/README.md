@@ -46,7 +46,7 @@ The add-on scans `/homeassistant/automations.yaml` and `/homeassistant/scripts.y
 0.3.1 remains **Monitor Only**. It sends no vehicle, wake or Clever charging commands.
 
 
-## 0.3.4 diagnostics
+## 0.3.5 diagnostics
 
 - Shows **Seneste kontakt** and the HA entity that supplied the freshest vehicle signal for both cars.
 - Shows Clever **Sidst set alder** from the integration's explicit last-seen timestamp.
@@ -54,3 +54,13 @@ The add-on scans `/homeassistant/automations.yaml` and `/homeassistant/scripts.y
 - The diagnostic dump redacts common sensitive attributes such as passwords, API keys, tokens and GPS coordinates.
 - Adds **Kopiér AI-dump** and **Hent AI-dump** buttons in Ingress.
 - Tightens Clever auto-discovery so generic entities such as Status/Online/Charging must belong to the same charger entity prefix; this prevents unrelated devices from being selected.
+
+
+## 0.3.5 legacy rollback
+
+- Captures a persistent **legacy rollback baseline** on first start after upgrade.
+- The baseline stores ON/OFF state for EV-related Home Assistant automations and is not overwritten automatically.
+- Adds **Gendan legacy baseline** to restore the saved automation states if EV Orchestrator control is later rolled back.
+- Adds a deliberate **Opdater baseline til nu** action with confirmation.
+- Legacy audit details are collapsed by default while critical/warning/info statistics remain visible.
+- Legacy entries are explicitly labeled as legacy/migration items.
