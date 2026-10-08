@@ -46,7 +46,7 @@ The add-on scans `/homeassistant/automations.yaml` and `/homeassistant/scripts.y
 0.3.1 remains **Monitor Only**. It sends no vehicle, wake or Clever charging commands.
 
 
-## 0.3.6 diagnostics
+## 0.3.7 diagnostics
 
 - Shows **Seneste kontakt** and the HA entity that supplied the freshest vehicle signal for both cars.
 - Shows Clever **Sidst set alder** from the integration's explicit last-seen timestamp.
@@ -56,7 +56,7 @@ The add-on scans `/homeassistant/automations.yaml` and `/homeassistant/scripts.y
 - Tightens Clever auto-discovery so generic entities such as Status/Online/Charging must belong to the same charger entity prefix; this prevents unrelated devices from being selected.
 
 
-## 0.3.6 legacy rollback
+## 0.3.7 legacy rollback
 
 - Captures a persistent **legacy rollback baseline** on first start after upgrade.
 - The baseline stores ON/OFF state for EV-related Home Assistant automations and is not overwritten automatically.
@@ -66,10 +66,20 @@ The add-on scans `/homeassistant/automations.yaml` and `/homeassistant/scripts.y
 - Legacy entries are explicitly labeled as legacy/migration items.
 
 
-## 0.3.6 polling clarification
+## 0.3.7 polling clarification
 
 - Renames **Seneste kontakt** to **Seneste HA-opdatering** because this value reflects Home Assistant state freshness, not a guaranteed direct vehicle-cloud contact.
 - Renames **Health** in vehicle cards to **Data health**.
 - Shows **Bil-polling: INGEN** in the System card.
 - Monitor mode reads only Home Assistant's cached state registry. It does not call `homeassistant.update_entity`, vehicle refresh, wake, start or stop.
 - The default 5-second loop is only a local Home Assistant state read and does not create extra 12V load on either vehicle.
+
+
+## 0.3.7 vehicle contact evidence
+
+- Adds **Sidste positive bilkontakt** as a separate concept from ordinary Home Assistant state freshness.
+- Uses provider/vehicle timestamps exposed inside entity attributes when available.
+- Treats a completed Citroën remote command as high-confidence positive contact.
+- Shows **Forventet bilsvar** and flags a pending Citroën command as overdue after 180 seconds.
+- Keeps **Seneste HA-opdatering** separately, so HA state activity is never confused with proven vehicle contact.
+- Fixes the UI health color for providers whose state is `available` (including Clever).
