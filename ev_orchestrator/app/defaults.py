@@ -110,6 +110,13 @@ DEFAULT_SETTINGS = {
         ],
         "mg_order": ["smartcar", "ha_mg", "obd_wican"]
     },
+    "shadow": {
+        "enabled": True,
+        "sample_seconds": 60,
+        "history_limit": 2000,
+        "require_active_vehicle_match": True,
+        "record_unchanged_checkpoint_minutes": 15
+    },
     "audit": {
         "enabled": True,
         "show_disabled": True,
