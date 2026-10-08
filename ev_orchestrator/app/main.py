@@ -17,7 +17,7 @@ from ha_client import HomeAssistantClient
 from model import build_snapshot
 from store import Store
 
-VERSION = "0.3.5"
+VERSION = "0.3.6"
 STATIC_DIR = Path(__file__).parent / "static"
 
 LOG_LEVEL = os.environ.get("EV_ORCH_LOG_LEVEL", "info").upper()
@@ -357,6 +357,11 @@ class App:
             "generated_at": self.now(),
             "orchestrator_version": VERSION,
             "purpose": "Troubleshooting export. Sensitive HA attributes such as tokens/passwords/GPS coordinates are redacted.",
+            "vehicle_polling": {
+                "active_vehicle_requests": False,
+                "ha_state_poll_seconds": self.store.settings.get("poll_seconds", 5),
+                "note": "EV Orchestrator only reads Home Assistant's cached state registry in Monitor mode. It does not call update_entity, wake, refresh, start or stop on either vehicle.",
+            },
             "last_poll": self.last_poll,
             "last_audit": self.last_audit,
             "last_error": self.last_error,
@@ -388,6 +393,11 @@ class App:
             "last_audit": self.last_audit,
             "last_error": self.last_error,
             "snapshot": self.snapshot,
+            "vehicle_polling": {
+                "active_vehicle_requests": False,
+                "ha_state_poll_seconds": self.store.settings.get("poll_seconds", 5),
+                "mode": "home_assistant_state_cache_only",
+            },
             "audit": self.audit,
             "legacy_baseline": self.legacy_baseline_status(),
             "events": self.store.read_events(100),
@@ -404,7 +414,7 @@ class App:
         payload = await request.json()
         if payload.get("mode") not in (None, "monitor"):
             return web.json_response({
-                "error": "Version 0.3.5 er bevidst låst til Monitor mode. Control mode aktiveres først efter live-validering og legacy-audit er ren."
+                "error": "Version 0.3.6 er bevidst låst til Monitor mode. Control mode aktiveres først efter live-validering og legacy-audit er ren."
             }, status=400)
         self.store.save_settings(payload)
         self.snapshot = build_snapshot(self.states, self.store.settings)
