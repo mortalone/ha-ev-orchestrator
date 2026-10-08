@@ -102,35 +102,70 @@ def _asciiish(value: Any) -> str:
     )
 
 
+def _object_id(entity_id: str) -> str:
+    return entity_id.split(".", 1)[1] if "." in entity_id else entity_id
+
+
+def _derive_prefix(entity_id: str, suffixes: list[str]) -> str | None:
+    obj = _asciiish(_object_id(entity_id))
+    for suffix in suffixes:
+        s = _asciiish(suffix)
+        if obj == s:
+            return ""
+        marker = "_" + s
+        if obj.endswith(marker):
+            return obj[: -len(marker)]
+    return None
+
+
 def _discover_clever_entities(
     states: list[dict[str, Any]],
     configured: dict[str, str],
 ) -> tuple[dict[str, dict[str, Any]], dict[str, Any]]:
-    """Resolve Clever entities even when HA generated Danish/device-prefixed entity IDs."""
+    """Resolve Clever entities while avoiding unrelated generic HA entities.
+
+    Clever's entity IDs normally share a charger/device prefix. We first resolve
+    strong, distinctive entities and derive that prefix. Generic names such as
+    Status, Online and Charging are only accepted when they share the same prefix.
+    """
     sm = _state_map(states)
     resolved: dict[str, dict[str, Any]] = {}
-    discovery: dict[str, Any] = {"auto_discovered": [], "configured_found": [], "missing": []}
+    discovery: dict[str, Any] = {
+        "auto_discovered": [],
+        "configured_found": [],
+        "missing": [],
+        "charger_prefix": None,
+    }
     used: set[str] = set()
 
-    for key, rule in CLEVER_DISCOVERY.items():
-        configured_id = configured.get(key)
-        if configured_id and configured_id in sm:
-            resolved[key] = _item(sm, configured_id)
-            discovery["configured_found"].append({"key": key, "entity_id": configured_id})
-            used.add(configured_id)
-            continue
+    strong_keys = [
+        "departure_time",
+        "power_required",
+        "smart_charging",
+        "model",
+        "phase_count",
+        "ampere",
+        "last_seen",
+    ]
+    generic_keys = ["status", "online", "is_charging"]
 
+    def best_match(key: str, required_prefix: str | None = None) -> str | None:
+        rule = CLEVER_DISCOVERY[key]
         best: tuple[int, str] | None = None
         for state in states:
             entity_id = state.get("entity_id", "")
             if not entity_id.startswith(rule["domain"] + ".") or entity_id in used:
                 continue
+            obj = _asciiish(_object_id(entity_id))
+            if required_prefix is not None:
+                if required_prefix == "":
+                    pass
+                elif not (obj == required_prefix or obj.startswith(required_prefix + "_")):
+                    continue
 
             attrs = state.get("attributes", {}) or {}
             friendly = _asciiish(attrs.get("friendly_name", ""))
-            object_id = _asciiish(entity_id.split(".", 1)[1] if "." in entity_id else entity_id)
             score = 0
-
             for name in rule["names"]:
                 n = _asciiish(name)
                 if friendly == n:
@@ -139,36 +174,73 @@ def _discover_clever_entities(
                     score = max(score, 95)
                 elif n in friendly:
                     score = max(score, 75)
-
             for suffix in rule["suffixes"]:
                 s = _asciiish(suffix)
-                if object_id == s:
+                if obj == s:
                     score = max(score, 92)
-                elif object_id.endswith("_" + s):
+                elif obj.endswith("_" + s):
                     score = max(score, 88)
-                elif s in object_id:
+                elif s in obj:
                     score = max(score, 65)
 
-            # The Clever integration exposes these entities on one charger device.
-            # Requiring a fairly high score avoids accidentally grabbing unrelated
-            # generic sensors named "Status", "Model" or "Online".
-            threshold = 88 if key in {"status", "model", "online", "ampere"} else 75
+            threshold = 75 if key in strong_keys else 88
             if score >= threshold and (best is None or score > best[0]):
                 best = (score, entity_id)
+        return best[1] if best else None
 
-        if best:
-            _, entity_id = best
+    # Honor configured IDs when they exist.
+    for key in CLEVER_DISCOVERY:
+        configured_id = configured.get(key)
+        if configured_id and configured_id in sm:
+            resolved[key] = _item(sm, configured_id)
+            discovery["configured_found"].append({"key": key, "entity_id": configured_id})
+            used.add(configured_id)
+
+    # First pass: distinctive charger entities.
+    for key in strong_keys:
+        if key in resolved:
+            continue
+        entity_id = best_match(key)
+        if entity_id:
             resolved[key] = _item(sm, entity_id)
             discovery["auto_discovered"].append({"key": key, "entity_id": entity_id})
             used.add(entity_id)
-        else:
+
+    # Derive the common charger prefix from the strongest resolved controls.
+    prefixes: list[str] = []
+    for key in ("power_required", "departure_time", "smart_charging", "model"):
+        item = resolved.get(key)
+        if not item or not item.get("entity_id"):
+            continue
+        prefix = _derive_prefix(item["entity_id"], CLEVER_DISCOVERY[key]["suffixes"])
+        if prefix is not None:
+            prefixes.append(prefix)
+
+    charger_prefix: str | None = None
+    if prefixes:
+        # Prefer the longest prefix; it is normally the full charger/device slug.
+        charger_prefix = sorted(prefixes, key=len, reverse=True)[0]
+        discovery["charger_prefix"] = charger_prefix
+
+    # Second pass: generic fields MUST be on the same charger prefix.
+    for key in generic_keys:
+        if key in resolved:
+            continue
+        entity_id = best_match(key, required_prefix=charger_prefix) if charger_prefix is not None else None
+        if entity_id:
+            resolved[key] = _item(sm, entity_id)
+            discovery["auto_discovered"].append({"key": key, "entity_id": entity_id})
+            used.add(entity_id)
+
+    for key in CLEVER_DISCOVERY:
+        if key not in resolved:
+            configured_id = configured.get(key)
             resolved[key] = _item(sm, configured_id)
             discovery["missing"].append({"key": key, "configured_entity_id": configured_id})
 
     discovery["resolved_count"] = sum(1 for item in resolved.values() if item.get("available"))
     discovery["total_count"] = len(CLEVER_DISCOVERY)
     return resolved, discovery
-
 
 def _vehicle_health(items: dict[str, dict[str, Any]], freshness_key: str = "soc") -> str:
     main = items.get(freshness_key, {})
@@ -183,6 +255,44 @@ def _vehicle_health(items: dict[str, dict[str, Any]], freshness_key: str = "soc"
         return "degraded"
     return "ok"
 
+
+def _contact_summary(items: dict[str, dict[str, Any]], keys: list[str]) -> dict[str, Any]:
+    candidates: list[tuple[float, dict[str, Any]]] = []
+    for key in keys:
+        item = items.get(key, {})
+        age = item.get("age_seconds")
+        if item.get("available") and age is not None:
+            candidates.append((float(age), item))
+    if not candidates:
+        return {
+            "age_seconds": None,
+            "entity_id": None,
+            "timestamp": None,
+            "state": None,
+        }
+    age, item = min(candidates, key=lambda x: x[0])
+    timestamp = None
+    try:
+        timestamp = (datetime.now(timezone.utc) - __import__("datetime").timedelta(seconds=age)).isoformat()
+    except Exception:
+        pass
+    return {
+        "age_seconds": age,
+        "entity_id": item.get("entity_id"),
+        "timestamp": timestamp,
+        "state": item.get("state"),
+    }
+
+
+def _timestamp_state_age(item: dict[str, Any]) -> float | None:
+    value = item.get("state")
+    if not value or value in ("unknown", "unavailable"):
+        return None
+    try:
+        dt = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        return max(0.0, (datetime.now(timezone.utc) - dt).total_seconds())
+    except Exception:
+        return None
 
 def _norm(value: Any) -> str:
     return str(value or "").strip().lower()
@@ -393,6 +503,12 @@ def build_snapshot(states: list[dict[str, Any]], settings: dict[str, Any]) -> di
     )
     citroen_health = _vehicle_health(citroen_items)
     mg_health = _vehicle_health(mg_items)
+    citroen_contact = _contact_summary(
+        citroen_items, ["soc", "service_battery", "connected", "charging", "command_status", "tracker"]
+    )
+    mg_contact = _contact_summary(
+        mg_items, ["soc", "connected", "charging", "tracker", "vehicle_target_soc"]
+    )
     identity = _identity_assessment(sm, citroen_items, mg_items, shared_items, identity_cfg)
 
     clever_status = "available" if any(x.get("available") for x in clever_items.values()) else "not_configured"
@@ -406,12 +522,14 @@ def build_snapshot(states: list[dict[str, Any]], settings: dict[str, Any]) -> di
             "configured_target_soc": c["target_soc"],
             "configured_minimum_soc": c["minimum_soc"],
             "health": citroen_health,
+            "last_contact": citroen_contact,
             "entities": citroen_items,
         },
         "mg": {
             "configured_target_soc": m["target_soc"],
             "configured_minimum_soc": m["minimum_soc"],
             "health": mg_health,
+            "last_contact": mg_contact,
             "entities": mg_items,
         },
         "identity": identity,
@@ -419,6 +537,7 @@ def build_snapshot(states: list[dict[str, Any]], settings: dict[str, Any]) -> di
             "health": clever_status,
             "entities": clever_items,
             "discovery": clever_discovery,
+            "last_seen_age_seconds": _timestamp_state_age(clever_items.get("last_seen", {})),
             "fallback": _fallback_assessment(citroen_health, identity, clever_items, clever_cfg),
             "soft_stop": _stop_verification_status(shared_items, citroen_items, clever_items, clever_cfg),
             "emulator_required": False,
