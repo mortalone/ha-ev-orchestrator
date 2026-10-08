@@ -2,13 +2,13 @@
 
 Home Assistant add-on repository for **EV Orchestrator**.
 
-Current version: **0.3.0**
+Current version: **0.3.1**
 
 EV Orchestrator centralizes EV monitoring, legacy-audit, provider health, vehicle identification/interlocks and future charging control for Citroën, MG and a Clever home charger.
 
 ## Current status
 
-Version 0.3.0 is deliberately **Monitor Only**. It does not send START/STOP/WAKE or Clever commands yet. The purpose is to validate data quality, identify legacy automation conflicts and prove the safety interlocks before Control mode is enabled.
+Version 0.3.1 is deliberately **Monitor Only**. It does not send START/STOP/WAKE or Clever commands yet. The purpose is to validate data quality, identify legacy automation conflicts and prove the safety interlocks before Control mode is enabled.
 
 ## Highlights
 
