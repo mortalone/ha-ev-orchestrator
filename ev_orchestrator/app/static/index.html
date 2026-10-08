@@ -1,0 +1,103 @@
+<!doctype html>
+<html lang="da">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>EV Orchestrator</title>
+<style>
+:root{color-scheme:dark;--bg:#0d1117;--card:#161b22;--line:#30363d;--txt:#e6edf3;--muted:#8b949e;--good:#3fb950;--warn:#d29922;--bad:#f85149}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--txt);font:14px/1.45 system-ui,sans-serif}
+header{position:sticky;top:0;background:#0d1117ee;border-bottom:1px solid var(--line);padding:14px 18px;display:flex;justify-content:space-between;z-index:2}
+h1{margin:0;font-size:20px}h2{margin:0 0 10px;font-size:16px}h3{font-size:14px}.muted{color:var(--muted)}
+.wrap{max-width:1500px;margin:auto;padding:18px}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:14px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:14px}.wide{grid-column:1/-1}
+.row{display:flex;justify-content:space-between;gap:12px;padding:6px 0;border-bottom:1px solid #30363d88}.row:last-child{border:0}.value{text-align:right}
+.pill{display:inline-flex;align-items:center;gap:6px;padding:3px 8px;border:1px solid var(--line);border-radius:999px;font-size:12px}
+.dot{width:8px;height:8px;border-radius:50%;background:var(--muted)}.ok .dot{background:var(--good)}.degraded .dot,.warning .dot{background:var(--warn)}.down .dot,.critical .dot{background:var(--bad)}
+button{background:#21262d;color:var(--txt);border:1px solid var(--line);border-radius:7px;padding:7px 10px;cursor:pointer}.danger{border-color:#7d2c2c}
+.formgrid{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:10px}.field{display:flex;flex-direction:column;gap:5px}
+input,select{background:#0d1117;color:var(--txt);border:1px solid var(--line);border-radius:7px;padding:8px}
+details{border-top:1px solid var(--line);margin-top:12px;padding-top:10px}summary{cursor:pointer;font-weight:600}
+.banner{padding:10px 12px;border:1px solid #6e4d0d;background:#251a05;border-radius:9px;margin-bottom:12px}
+table{width:100%;border-collapse:collapse}td,th{padding:8px;border-bottom:1px solid var(--line);text-align:left;vertical-align:top}.sev.critical{color:var(--bad)}.sev.warning{color:var(--warn)}
+.event{font:12px ui-monospace,monospace;border-bottom:1px solid #30363d88;padding:5px 0}.toolbar{display:flex;gap:8px;flex-wrap:wrap}
+</style>
+</head>
+<body>
+<header><div><h1>EV Orchestrator</h1><div class="muted" id="meta">indlæser…</div></div><button onclick="refreshNow()">Opdatér nu</button></header>
+<div class="wrap"><div id="error"></div><div class="grid">
+<section class="card"><h2>Citroën ë-C4</h2><div id="citroen"></div></section>
+<section class="card"><h2>MG</h2><div id="mg"></div></section>
+<section class="card"><h2>Clever</h2><div id="clever"></div></section>
+<section class="card"><h2>Bil-identifikation / interlocks</h2><div id="identity"></div></section>
+<section class="card"><h2>System</h2><div id="system"></div></section>
+<section class="card"><h2>Providers</h2><div id="providers"></div></section>
+
+<section class="card wide"><h2>Legacy audit</h2><div class="muted">Scanner automations.yaml og scripts.yaml read-only og sammenholder med live status.</div><div id="audit" style="margin-top:10px"></div></section>
+<section class="card wide"><h2>Timeline</h2><div id="timeline"></div></section>
+
+<section class="card wide"><h2>Indstillinger</h2>
+<div class="banner">0.3.0 er låst til <b>Monitor</b>. Ingen START/STOP/WAKE/Clever-kommandoer sendes endnu.</div>
+<form id="settingsForm">
+<div class="formgrid">
+<label class="field">Planner<select id="planner"><option value="ev_smart_charging">EV Smart Charging</option><option value="monitor_only">Monitor only</option></select></label>
+<label class="field">Clever fallback<select id="cleverFallback"><option value="on">Aktiv</option><option value="off">Fra</option></select></label>
+<label class="field">Ukendt SOC fallback (kWh)<input id="cleverUnknownKwh" type="number" min="0" max="80"></label>
+<label class="field">Citroën target SOC<input id="cTarget" type="number" min="0" max="100"></label>
+<label class="field">Citroën minimum SOC<input id="cMin" type="number" min="0" max="100"></label>
+<label class="field">MG target SOC<input id="mTarget" type="number" min="0" max="100"></label>
+<label class="field">MG minimum SOC<input id="mMin" type="number" min="0" max="100"></label>
+<label class="field">Citroën maxpris<input id="cPrice" type="number" min="0" step=".01"></label>
+<label class="field">MG maxpris<input id="mPrice" type="number" min="0" step=".01"></label>
+</div>
+
+<details><summary>Bil-identifikation / Clever sikkerhedsinterlocks</summary><div class="formgrid" style="margin-top:10px">
+<label class="field">Citroën BLE beacon entity<input id="citroenBeacon" placeholder="fx device_tracker.citroen_beacon"></label>
+<label class="field">Beacon present states<input id="citroenBeaconStates" placeholder="home, on, present"></label>
+<label class="field">MG primær guard entity<input id="mgGuard"></label>
+<label class="field">MG guard present states<input id="mgGuardStates"></label>
+<label class="field">MG charging entity<input id="mgChargingGuard"></label>
+<label class="field">MG charging states<input id="mgChargingStates"></label>
+<label class="field">MG ekstra presence/WiFi entity<input id="mgOptionalPresence"></label>
+<label class="field">Ekstra MG presence states<input id="mgOptionalStates"></label>
+<label class="field">Maks signalalder (sek)<input id="identityMaxAge" type="number" min="30"></label>
+<label class="field">Krævede negative MG-signaler<input id="mgNegativeSignals" type="number" min="1" max="4"></label>
+<label class="field">Ukendt MG-status<select id="unknownBlocks"><option value="on">Blokér fallback</option><option value="off">Tillad</option></select></label>
+</div></details>
+
+<details><summary>Clever 0 kWh soft-stop</summary><div class="formgrid" style="margin-top:10px">
+<label class="field">Soft-stop<select id="softStopEnabled"><option value="off">Fra</option><option value="on">Klargør til Control mode</option></select></label>
+<label class="field">Verifikation timeout (sek)<input id="softStopTimeout" type="number" min="30"></label>
+<label class="field">Huseffekt under (W)<input id="softStopPowerBelow" type="number" min="0"></label>
+<label class="field">Minimum effektdrop (W)<input id="softStopDrop" type="number" min="0"></label>
+</div><p class="muted">Verifikation sker automatisk fra HA/Clever-signaler. Ingen manuel kontrol eller godkendelse kræves.</p></details>
+
+<details><summary>Wake / avanceret</summary><div class="formgrid" style="margin-top:10px">
+<label class="field">Min 12V for auto-wake<input id="wake12" type="number"></label>
+<label class="field">Wake cooldown (min)<input id="wakeCool" type="number"></label>
+<label class="field">Timeout-karantæne (timer)<input id="wakeQuarantine" type="number"></label>
+<label class="field">Status-check tider (sek, komma)<input id="wakeChecks"></label>
+</div></details>
+<div class="toolbar" style="margin-top:12px"><button type="submit">Gem</button><span id="saveMsg" class="muted"></span></div>
+</form></section>
+</div></div>
+
+<script>
+const api=p=>p.startsWith('/')?p.slice(1):p;let settings=null;
+const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const row=(k,v)=>`<div class="row"><span class="muted">${esc(k)}</span><span class="value">${v}</span></div>`;
+const ent=e=>!e?'—':`<span title="${esc(e.entity_id)}">${esc(e.state??'mangler')}</span>`;
+const health=h=>`<span class="pill ${esc(h)}"><i class="dot"></i>${esc(h)}</span>`;
+function age(s){if(s==null)return'—';if(s<60)return Math.round(s)+' s';if(s<3600)return Math.round(s/60)+' min';return(s/3600).toFixed(1)+' t'}
+function vehicle(v){const e=v?.entities||{};return row('Health',health(v?.health||'unknown'))+row('SOC',ent(e.soc)+' %')+row('Target',esc(v?.configured_target_soc)+' %')+row('Minimum',esc(v?.configured_minimum_soc)+' %')+row('Tilsluttet',ent(e.connected))+row('Lader',ent(e.charging))+row('SOC alder',esc(age(e.soc?.age_seconds)))+(e.service_battery?row('12V',ent(e.service_battery)+' %'):'')+(e.command_status?row('Kommando',ent(e.command_status)):'')+row('EVSC',ent(e.evsc_charging))}
+function clever(c){const e=c?.entities||{},f=c?.fallback||{},ss=c?.soft_stop||{};return row('Integration',health(c?.health||'not_configured'))+row('Online',ent(e.online))+row('Status',ent(e.status))+row('Ønsket energi',ent(e.power_required)+' kWh')+row('Afgang',ent(e.departure_time))+row('Smart charging',ent(e.smart_charging))+row('Fallback-kandidat',f.eligible?'<b>JA (monitor)</b>':'nej')+row('MG udelukket',f.mg_excluded?'ja':'nej/ukendt')+row('Citroën identificeret',f.citroen_identified?'ja':'nej/ukendt')+row('0 kWh soft-stop',esc(ss.capability_state||'unverified'))+row('Stop-verifikation','automatisk')+(f.reasons?.length?`<p class="muted">${esc(f.reasons.join(' · '))}</p>`:'')}
+function identity(i){const sig=x=>row(x.name,`${esc(x.state??'—')} <span class="muted">(${esc(x.verdict)})</span>`);return row('MG udelukket',i?.mg_excluded?'<b>JA</b>':'nej/ukendt')+row('MG negative signaler',`${i?.mg_negative_count??0} / ${i?.mg_required_negative_signals??0}`)+row('Citroën identificeret',i?.citroen_identified?'<b>JA</b>':'nej/ukendt')+row('Policy',esc(i?.policy||'—'))+'<h3>MG-signaler</h3>'+(i?.mg_signals||[]).map(sig).join('')+'<h3>Citroën-signaler</h3>'+(i?.citroen_signals||[]).map(sig).join('')}
+function providers(p){return ['citroen','mg','charger'].map(k=>`<h3>${k==='citroen'?'Citroën':k==='mg'?'MG':'Ladeboks'}</h3>`+(p?.[k]||[]).map(x=>row(x.label,health(x.status))).join('')).join('')}
+function audit(a){const s=a?.summary||{};let h=`<div class="toolbar"><span class="pill critical"><i class="dot"></i>${s.critical||0} kritisk</span><span class="pill warning"><i class="dot"></i>${s.warning||0} advarsel</span><span class="pill"><i class="dot"></i>${s.info||0} info</span></div>`;if(!a?.findings?.length)return h+'<p class="muted">Ingen kendte konfliktmønstre.</p>';return h+`<div style="overflow:auto"><table><thead><tr><th>Alvor</th><th>Navn</th><th>Aktiv</th><th>Fund</th><th></th></tr></thead><tbody>${a.findings.map(f=>{const on=f.kind==='automation'?(f.enabled===true?'JA':f.enabled===false?'nej':'?'):(f.runtime_state||'—');const b=f.kind==='automation'&&f.enabled===true&&f.entity_id?`<button class="danger" onclick="disableAutomation('${esc(f.entity_id)}')">Slå fra</button>`:'';return`<tr><td class="sev ${esc(f.severity)}">${esc(f.severity)}</td><td>${esc(f.name)}<div class="muted">${esc(f.file)}${f.line?':'+f.line:''}</div></td><td>${on}</td><td>${esc(f.reason)}<div class="muted">${esc(f.recommendation)}</div></td><td>${b}</td></tr>`}).join('')}</tbody></table></div>`}
+function timeline(es){return(es||[]).map(e=>`<div class="event">${esc((e.ts||'').replace('T',' ').slice(0,19))} · ${esc(e.type)} ${esc(e.entity_id||'')} ${e.from!==undefined?esc(e.from)+' → '+esc(e.to):''}</div>`).join('')||'<p class="muted">Ingen events endnu.</p>'}
+async function load(){try{const d=await(await fetch(api('api/status'))).json();meta.textContent=`v${d.version} · poll ${d.last_poll?new Date(d.last_poll).toLocaleTimeString():'—'}`;error.innerHTML=d.last_error?`<div class="banner">${esc(d.last_error)}</div>`:'';citroen.innerHTML=vehicle(d.snapshot.citroen);mg.innerHTML=vehicle(d.snapshot.mg);clever.innerHTML=window.clever(d.snapshot.clever);identity.innerHTML=window.identity(d.snapshot.identity);const sh=d.snapshot.shared||{};system.innerHTML=row('Mode',esc(d.snapshot.mode))+row('Planner',esc(d.snapshot.planner))+row('Aktiv bil',ent(sh.active_vehicle))+row('Huseffekt',ent(sh.house_power)+' W')+row('Live effekt',ent(sh.house_power_live)+' W');providers.innerHTML=window.providers(d.snapshot.providers);audit.innerHTML=window.audit(d.audit);timeline.innerHTML=window.timeline(d.events)}catch(e){error.innerHTML=`<div class="banner">${esc(e)}</div>`}}
+async function loadSettings(){settings=await(await fetch(api('api/settings'))).json();planner.value=settings.planner;cleverFallback.value=settings.clever?.use_as_fallback?'on':'off';cleverUnknownKwh.value=settings.clever?.unknown_soc_power_required_kwh??0;cTarget.value=settings.citroen.target_soc;cMin.value=settings.citroen.minimum_soc;mTarget.value=settings.mg.target_soc;mMin.value=settings.mg.minimum_soc;cPrice.value=settings.citroen.max_price;mPrice.value=settings.mg.max_price;wake12.value=settings.citroen.wake_12v_min;wakeCool.value=settings.citroen.wake_cooldown_minutes;wakeQuarantine.value=settings.citroen.wake_timeout_quarantine_hours;wakeChecks.value=settings.citroen.status_check_seconds.join(', ');const i=settings.identity||{};citroenBeacon.value=i.citroen_beacon_entity||'';citroenBeaconStates.value=(i.citroen_beacon_present_states||[]).join(', ');mgGuard.value=i.mg_guard_entity||'';mgGuardStates.value=(i.mg_guard_present_states||[]).join(', ');mgChargingGuard.value=i.mg_charging_entity||'';mgChargingStates.value=(i.mg_charging_states||[]).join(', ');mgOptionalPresence.value=i.mg_optional_presence_entity||'';mgOptionalStates.value=(i.mg_optional_presence_states||[]).join(', ');identityMaxAge.value=i.max_signal_age_seconds??600;mgNegativeSignals.value=i.mg_required_negative_signals??2;unknownBlocks.value=i.unknown_blocks_clever===false?'off':'on';const ss=settings.clever?.soft_stop_zero_kwh||{};softStopEnabled.value=ss.enabled?'on':'off';softStopTimeout.value=ss.verify_timeout_seconds??120;softStopPowerBelow.value=ss.verify_house_power_below_w??6000;softStopDrop.value=ss.verify_min_power_drop_w??2500}
+settingsForm.addEventListener('submit',async e=>{e.preventDefault();settings.planner=planner.value;settings.clever.use_as_fallback=cleverFallback.value==='on';settings.clever.unknown_soc_power_required_kwh=+cleverUnknownKwh.value;settings.citroen.target_soc=+cTarget.value;settings.citroen.minimum_soc=+cMin.value;settings.mg.target_soc=+mTarget.value;settings.mg.minimum_soc=+mMin.value;settings.citroen.max_price=+cPrice.value;settings.mg.max_price=+mPrice.value;settings.citroen.wake_12v_min=+wake12.value;settings.citroen.wake_cooldown_minutes=+wakeCool.value;settings.citroen.wake_timeout_quarantine_hours=+wakeQuarantine.value;settings.citroen.status_check_seconds=wakeChecks.value.split(',').map(x=>+x.trim()).filter(x=>x>0);settings.identity=settings.identity||{};settings.identity.citroen_beacon_entity=citroenBeacon.value.trim();settings.identity.citroen_beacon_present_states=citroenBeaconStates.value.split(',').map(x=>x.trim()).filter(Boolean);settings.identity.mg_guard_entity=mgGuard.value.trim();settings.identity.mg_guard_present_states=mgGuardStates.value.split(',').map(x=>x.trim()).filter(Boolean);settings.identity.mg_charging_entity=mgChargingGuard.value.trim();settings.identity.mg_charging_states=mgChargingStates.value.split(',').map(x=>x.trim()).filter(Boolean);settings.identity.mg_optional_presence_entity=mgOptionalPresence.value.trim();settings.identity.mg_optional_presence_states=mgOptionalStates.value.split(',').map(x=>x.trim()).filter(Boolean);settings.identity.max_signal_age_seconds=+identityMaxAge.value;settings.identity.mg_required_negative_signals=+mgNegativeSignals.value;settings.identity.unknown_blocks_clever=unknownBlocks.value==='on';settings.clever.soft_stop_zero_kwh=settings.clever.soft_stop_zero_kwh||{};settings.clever.soft_stop_zero_kwh.enabled=softStopEnabled.value==='on';settings.clever.soft_stop_zero_kwh.verify_timeout_seconds=+softStopTimeout.value;settings.clever.soft_stop_zero_kwh.verify_house_power_below_w=+softStopPowerBelow.value;settings.clever.soft_stop_zero_kwh.verify_min_power_drop_w=+softStopDrop.value;const r=await fetch(api('api/settings'),{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(settings)});const d=await r.json();saveMsg.textContent=r.ok?'Gemt':d.error||'Fejl';if(r.ok){settings=d;await load()}})
+async function refreshNow(){await fetch(api('api/refresh'),{method:'POST'});await load()}
+async function disableAutomation(entity_id){if(!confirm('Slå automation fra?\n'+entity_id))return;await fetch(api('api/automation/disable'),{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({entity_id})});await load()}
+loadSettings();load();setInterval(load,5000);
+</script></body></html>
