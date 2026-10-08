@@ -44,3 +44,13 @@ The add-on scans `/homeassistant/automations.yaml` and `/homeassistant/scripts.y
 ## Safety
 
 0.3.1 remains **Monitor Only**. It sends no vehicle, wake or Clever charging commands.
+
+
+## 0.3.4 diagnostics
+
+- Shows **Seneste kontakt** and the HA entity that supplied the freshest vehicle signal for both cars.
+- Shows Clever **Sidst set alder** from the integration's explicit last-seen timestamp.
+- Adds an **AI diagnostic dump** with current snapshot, settings, provider/entity discovery, legacy audit, timeline events, relevant Home Assistant states and the add-on's internal application log.
+- The diagnostic dump redacts common sensitive attributes such as passwords, API keys, tokens and GPS coordinates.
+- Adds **Kopiér AI-dump** and **Hent AI-dump** buttons in Ingress.
+- Tightens Clever auto-discovery so generic entities such as Status/Online/Charging must belong to the same charger entity prefix; this prevents unrelated devices from being selected.
