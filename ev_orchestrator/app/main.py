@@ -5,6 +5,7 @@ import copy
 import json
 import logging
 import os
+import time
 from collections import deque
 from datetime import datetime, timezone
 from pathlib import Path
@@ -15,9 +16,16 @@ from aiohttp import web
 from audit import scan
 from ha_client import HomeAssistantClient
 from model import build_snapshot
+from shadow import (
+    coverage_flags as shadow_coverage_flags,
+    evaluate_shadow,
+    readiness as calculate_shadow_readiness,
+    signature as calculate_shadow_signature,
+    update_observations,
+)
 from store import Store
 
-VERSION = "0.3.9"
+VERSION = "0.4.0"
 STATIC_DIR = Path(__file__).parent / "static"
 
 LOG_LEVEL = os.environ.get("EV_ORCH_LOG_LEVEL", "info").upper()
@@ -75,6 +83,9 @@ class App:
         self.last_poll: str | None = None
         self.last_audit: str | None = None
         self._last_interesting: dict[str, str] = {}
+        self.shadow: dict[str, Any] = {}
+        self.shadow_state: dict[str, Any] = self.store.read_shadow_state()
+        self._last_shadow_sample_monotonic: float = 0.0
         self.tasks: list[asyncio.Task[Any]] = []
 
     async def start(self, app: web.Application) -> None:
@@ -104,9 +115,96 @@ class App:
             self._record_state_changes(new_states)
             self.states = new_states
             self.snapshot = build_snapshot(self.states, self.store.settings)
+            self._update_shadow()
         except Exception as exc:
             self.last_error = f"Home Assistant API: {exc}"
             LOG.exception("Failed to refresh HA states")
+
+    def _shadow_event_payload(self, event_type: str, flags: set[str]) -> dict[str, Any]:
+        return {
+            "ts": self.now(),
+            "type": event_type,
+            "signature": calculate_shadow_signature(self.shadow),
+            "active_vehicle": self.shadow.get("active_vehicle"),
+            "citroen": self.shadow.get("citroen"),
+            "mg": self.shadow.get("mg"),
+            "coverage_flags": sorted(flags),
+        }
+
+    def _shadow_checkpoint_due(self) -> bool:
+        minutes = int(
+            self.store.settings.get("shadow", {}).get(
+                "record_unchanged_checkpoint_minutes", 15
+            )
+        )
+        if minutes <= 0:
+            return False
+        last = self.shadow_state.get("last_checkpoint_at")
+        if not last:
+            return True
+        try:
+            dt = datetime.fromisoformat(str(last).replace("Z", "+00:00"))
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            return (datetime.now(timezone.utc) - dt).total_seconds() >= minutes * 60
+        except Exception:
+            return True
+
+    def _update_shadow(self) -> None:
+        self.shadow = evaluate_shadow(self.snapshot, self.store.settings)
+        if not self.shadow.get("enabled"):
+            return
+
+        sig = calculate_shadow_signature(self.shadow)
+        previous_sig = self.shadow_state.get("last_signature")
+        changed = sig != previous_sig
+
+        sample_seconds = max(
+            15,
+            int(self.store.settings.get("shadow", {}).get("sample_seconds", 60)),
+        )
+        now_mono = time.monotonic()
+        sample_due = (
+            self._last_shadow_sample_monotonic == 0.0
+            or now_mono - self._last_shadow_sample_monotonic >= sample_seconds
+        )
+        checkpoint_due = self._shadow_checkpoint_due()
+
+        if changed or sample_due:
+            flags = shadow_coverage_flags(self.shadow, self.snapshot)
+            now = self.now()
+            self.shadow_state = update_observations(
+                self.shadow_state, flags, now
+            )
+            self.shadow_state["last_signature"] = sig
+            self.shadow_state["last_sample_at"] = now
+            self.shadow_state["readiness"] = calculate_shadow_readiness(
+                self.shadow_state
+            )
+            self._last_shadow_sample_monotonic = now_mono
+
+            if changed:
+                self.store.append_shadow_event(
+                    self._shadow_event_payload("decision_change", flags),
+                    int(
+                        self.store.settings.get("shadow", {}).get(
+                            "history_limit", 2000
+                        )
+                    ),
+                )
+
+            if checkpoint_due:
+                self.shadow_state["last_checkpoint_at"] = now
+                self.store.append_shadow_event(
+                    self._shadow_event_payload("checkpoint", flags),
+                    int(
+                        self.store.settings.get("shadow", {}).get(
+                            "history_limit", 2000
+                        )
+                    ),
+                )
+
+            self.store.save_shadow_state(self.shadow_state)
 
     def _interesting_entities(self) -> set[str]:
         s = self.store.settings
@@ -369,6 +467,9 @@ class App:
             "snapshot": _redact(copy.deepcopy(self.snapshot)),
             "legacy_audit": _redact(copy.deepcopy(self.audit)),
             "legacy_baseline": _redact(copy.deepcopy(self.legacy_baseline_status())),
+            "shadow_control": _redact(copy.deepcopy(self.shadow)),
+            "shadow_state": _redact(copy.deepcopy(self.shadow_state)),
+            "shadow_history": _redact(self.store.read_shadow_events(1000)),
             "timeline_events": self.store.read_events(500),
             "application_log": list(LOG_BUFFER),
             "relevant_home_assistant_states": self._diagnostic_states(),
@@ -400,6 +501,10 @@ class App:
             },
             "audit": self.audit,
             "legacy_baseline": self.legacy_baseline_status(),
+            "shadow": self.shadow,
+            "shadow_state": self.shadow_state,
+            "shadow_readiness": calculate_shadow_readiness(self.shadow_state),
+            "shadow_history": self.store.read_shadow_events(100),
             "events": self.store.read_events(100),
         })
 
@@ -414,7 +519,7 @@ class App:
         payload = await request.json()
         if payload.get("mode") not in (None, "monitor"):
             return web.json_response({
-                "error": "Version 0.3.9 er bevidst låst til Monitor mode. Control mode aktiveres først efter live-validering og legacy-audit er ren."
+                "error": "Version 0.4.0 er bevidst låst til Monitor mode. Control mode aktiveres først efter live-validering og legacy-audit er ren."
             }, status=400)
         self.store.save_settings(payload)
         self.snapshot = build_snapshot(self.states, self.store.settings)
