@@ -17,7 +17,7 @@ from ha_client import HomeAssistantClient
 from model import build_snapshot
 from store import Store
 
-VERSION = "0.3.3"
+VERSION = "0.3.5"
 STATIC_DIR = Path(__file__).parent / "static"
 
 LOG_LEVEL = os.environ.get("EV_ORCH_LOG_LEVEL", "info").upper()
@@ -80,6 +80,8 @@ class App:
     async def start(self, app: web.Application) -> None:
         await self.ha.start()
         await self.refresh_all()
+        if self.store.read_legacy_baseline() is None:
+            await self.capture_legacy_baseline(reason="first_start")
         self.tasks = [
             asyncio.create_task(self.poll_loop(), name="ha_poll"),
             asyncio.create_task(self.audit_loop(), name="audit"),
@@ -163,6 +165,154 @@ class App:
     async def index(self, request: web.Request) -> web.Response:
         return web.FileResponse(STATIC_DIR / "index.html")
 
+    def _legacy_automation_candidates(self) -> list[dict[str, Any]]:
+        """Find EV-related automations that belong to the pre-Orchestrator setup."""
+        candidates: dict[str, dict[str, Any]] = {}
+
+        # Anything already recognized by Legacy Audit belongs in the rollback set.
+        for finding in self.audit.get("findings", []):
+            entity_id = finding.get("entity_id")
+            if isinstance(entity_id, str) and entity_id.startswith("automation."):
+                candidates[entity_id] = {
+                    "entity_id": entity_id,
+                    "name": finding.get("name") or entity_id,
+                }
+
+        # Also include EV automations that may not currently trigger an audit warning.
+        markers = (
+            "citro", "ë-c4", "e-c4", "mgs6", "mg s6",
+            "ev smart charging", "elbil", "ev - ", "ev •",
+        )
+        for state in self.states:
+            entity_id = state.get("entity_id", "")
+            if not entity_id.startswith("automation."):
+                continue
+            name = str((state.get("attributes") or {}).get("friendly_name") or entity_id)
+            haystack = (entity_id + " " + name).lower()
+            if any(marker in haystack for marker in markers):
+                candidates.setdefault(entity_id, {"entity_id": entity_id, "name": name})
+
+        out: list[dict[str, Any]] = []
+        by_id = {state.get("entity_id"): state for state in self.states}
+        for entity_id, item in candidates.items():
+            state = by_id.get(entity_id, {})
+            attrs = state.get("attributes") or {}
+            out.append({
+                "entity_id": entity_id,
+                "name": item.get("name") or attrs.get("friendly_name") or entity_id,
+                "enabled": state.get("state") == "on",
+                "state": state.get("state"),
+                "automation_id": attrs.get("id"),
+            })
+        out.sort(key=lambda x: str(x.get("name") or "").lower())
+        return out
+
+    async def capture_legacy_baseline(self, reason: str = "manual") -> dict[str, Any]:
+        baseline = {
+            "captured_at": self.now(),
+            "captured_by_version": VERSION,
+            "reason": reason,
+            "description": "Rollback baseline for the legacy Home Assistant EV automations before EV Orchestrator control.",
+            "automations": self._legacy_automation_candidates(),
+        }
+        self.store.save_legacy_baseline(baseline)
+        self.store.append_event({
+            "ts": self.now(),
+            "type": "legacy_baseline_captured",
+            "count": len(baseline["automations"]),
+            "reason": reason,
+        })
+        return baseline
+
+    def legacy_baseline_status(self) -> dict[str, Any]:
+        baseline = self.store.read_legacy_baseline()
+        if not baseline:
+            return {"exists": False, "automations": [], "changed": [], "matching": 0, "total": 0}
+
+        by_id = {state.get("entity_id"): state for state in self.states}
+        changed: list[dict[str, Any]] = []
+        matching = 0
+        automations = baseline.get("automations", [])
+        for item in automations:
+            entity_id = item.get("entity_id")
+            current = by_id.get(entity_id)
+            expected = bool(item.get("enabled"))
+            if current is None:
+                changed.append({
+                    "entity_id": entity_id,
+                    "name": item.get("name"),
+                    "baseline_enabled": expected,
+                    "current": "missing",
+                })
+                continue
+            current_enabled = current.get("state") == "on"
+            if current_enabled == expected:
+                matching += 1
+            else:
+                changed.append({
+                    "entity_id": entity_id,
+                    "name": item.get("name"),
+                    "baseline_enabled": expected,
+                    "current_enabled": current_enabled,
+                })
+
+        return {
+            "exists": True,
+            "captured_at": baseline.get("captured_at"),
+            "captured_by_version": baseline.get("captured_by_version"),
+            "reason": baseline.get("reason"),
+            "total": len(automations),
+            "matching": matching,
+            "changed": changed,
+            "automations": automations,
+        }
+
+    async def api_capture_legacy_baseline(self, request: web.Request) -> web.Response:
+        baseline = await self.capture_legacy_baseline(reason="manual")
+        return web.json_response({
+            "ok": True,
+            "baseline": baseline,
+            "status": self.legacy_baseline_status(),
+        })
+
+    async def api_restore_legacy_baseline(self, request: web.Request) -> web.Response:
+        baseline = self.store.read_legacy_baseline()
+        if not baseline:
+            return web.json_response({"error": "Ingen legacy baseline er gemt."}, status=404)
+
+        restored = []
+        failed = []
+        for item in baseline.get("automations", []):
+            entity_id = item.get("entity_id")
+            if not isinstance(entity_id, str) or not entity_id.startswith("automation."):
+                continue
+            try:
+                if item.get("enabled"):
+                    await self.ha.call_service("automation", "turn_on", {"entity_id": entity_id})
+                else:
+                    await self.ha.call_service(
+                        "automation", "turn_off",
+                        {"entity_id": entity_id, "stop_actions": True},
+                    )
+                restored.append(entity_id)
+            except Exception as exc:
+                failed.append({"entity_id": entity_id, "error": str(exc)})
+
+        self.store.append_event({
+            "ts": self.now(),
+            "type": "legacy_baseline_restored",
+            "restored_count": len(restored),
+            "failed_count": len(failed),
+        })
+        await asyncio.sleep(0.5)
+        await self.refresh_all()
+        return web.json_response({
+            "ok": not failed,
+            "restored": restored,
+            "failed": failed,
+            "status": self.legacy_baseline_status(),
+        })
+
     def _diagnostic_entity_ids(self) -> set[str]:
         ids = set(self._interesting_entities())
         for item in self.snapshot.get("clever", {}).get("entities", {}).values():
@@ -213,6 +363,7 @@ class App:
             "settings": _redact(copy.deepcopy(self.store.settings)),
             "snapshot": _redact(copy.deepcopy(self.snapshot)),
             "legacy_audit": _redact(copy.deepcopy(self.audit)),
+            "legacy_baseline": _redact(copy.deepcopy(self.legacy_baseline_status())),
             "timeline_events": self.store.read_events(500),
             "application_log": list(LOG_BUFFER),
             "relevant_home_assistant_states": self._diagnostic_states(),
@@ -238,6 +389,7 @@ class App:
             "last_error": self.last_error,
             "snapshot": self.snapshot,
             "audit": self.audit,
+            "legacy_baseline": self.legacy_baseline_status(),
             "events": self.store.read_events(100),
         })
 
@@ -252,7 +404,7 @@ class App:
         payload = await request.json()
         if payload.get("mode") not in (None, "monitor"):
             return web.json_response({
-                "error": "Version 0.3.4 er bevidst låst til Monitor mode. Control mode aktiveres først efter live-validering og legacy-audit er ren."
+                "error": "Version 0.3.5 er bevidst låst til Monitor mode. Control mode aktiveres først efter live-validering og legacy-audit er ren."
             }, status=400)
         self.store.save_settings(payload)
         self.snapshot = build_snapshot(self.states, self.store.settings)
@@ -289,6 +441,8 @@ async def make_app() -> web.Application:
     app.router.add_get("/api/status", controller.api_status)
     app.router.add_get("/api/diagnostics", controller.api_diagnostics)
     app.router.add_post("/api/refresh", controller.api_refresh)
+    app.router.add_post("/api/legacy-baseline/capture", controller.api_capture_legacy_baseline)
+    app.router.add_post("/api/legacy-baseline/restore", controller.api_restore_legacy_baseline)
     app.router.add_get("/api/settings", controller.api_settings_get)
     app.router.add_post("/api/settings", controller.api_settings_post)
     app.router.add_post("/api/automation/disable", controller.api_disable_automation)
