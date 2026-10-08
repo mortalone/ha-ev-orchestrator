@@ -11,6 +11,8 @@ DATA_DIR = Path("/data")
 SETTINGS_PATH = DATA_DIR / "settings.json"
 EVENTS_PATH = DATA_DIR / "events.jsonl"
 LEGACY_BASELINE_PATH = DATA_DIR / "legacy_baseline.json"
+SHADOW_STATE_PATH = DATA_DIR / "shadow_state.json"
+SHADOW_EVENTS_PATH = DATA_DIR / "shadow_events.jsonl"
 
 
 def deep_merge(base: dict[str, Any], overlay: dict[str, Any]) -> dict[str, Any]:
@@ -59,6 +61,47 @@ class Store:
             json.dumps(baseline, indent=2, ensure_ascii=False),
             encoding="utf-8",
         )
+
+    def read_shadow_state(self) -> dict[str, Any]:
+        if not SHADOW_STATE_PATH.exists():
+            return {"observations": {}, "last_signature": None, "last_sample_at": None}
+        try:
+            data = json.loads(SHADOW_STATE_PATH.read_text(encoding="utf-8"))
+            return data if isinstance(data, dict) else {}
+        except Exception:
+            return {"observations": {}, "last_signature": None, "last_sample_at": None}
+
+    def save_shadow_state(self, state: dict[str, Any]) -> None:
+        SHADOW_STATE_PATH.write_text(
+            json.dumps(state, indent=2, ensure_ascii=False),
+            encoding="utf-8",
+        )
+
+    def append_shadow_event(self, event: dict[str, Any], max_lines: int = 2000) -> None:
+        with SHADOW_EVENTS_PATH.open("a", encoding="utf-8") as fh:
+            fh.write(json.dumps(event, ensure_ascii=False) + "\n")
+        self._trim_path(SHADOW_EVENTS_PATH, max_lines)
+
+    def read_shadow_events(self, limit: int = 200) -> list[dict[str, Any]]:
+        try:
+            lines = SHADOW_EVENTS_PATH.read_text(encoding="utf-8").splitlines()[-limit:]
+        except FileNotFoundError:
+            return []
+        out: list[dict[str, Any]] = []
+        for line in reversed(lines):
+            try:
+                out.append(json.loads(line))
+            except json.JSONDecodeError:
+                continue
+        return out
+
+    def _trim_path(self, path: Path, max_lines: int) -> None:
+        try:
+            lines = path.read_text(encoding="utf-8").splitlines()
+            if len(lines) > max_lines:
+                path.write_text("\n".join(lines[-max_lines:]) + "\n", encoding="utf-8")
+        except FileNotFoundError:
+            pass
 
     def append_event(self, event: dict[str, Any]) -> None:
         with EVENTS_PATH.open("a", encoding="utf-8") as fh:
