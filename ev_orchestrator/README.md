@@ -1,8 +1,8 @@
-# EV Orchestrator 0.3.0
+# EV Orchestrator 0.3.1
 
 EV Orchestrator is a central monitor and future charging controller for Home Assistant.
 
-## 0.3.0
+## 0.3.1
 
 - Adds configurable **vehicle identity / safety interlocks**.
 - Citroën can use a local BLE beacon as supporting identity evidence.
@@ -43,4 +43,4 @@ The add-on scans `/homeassistant/automations.yaml` and `/homeassistant/scripts.y
 
 ## Safety
 
-0.3.0 remains **Monitor Only**. It sends no vehicle, wake or Clever charging commands.
+0.3.1 remains **Monitor Only**. It sends no vehicle, wake or Clever charging commands.
