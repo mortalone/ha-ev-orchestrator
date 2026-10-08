@@ -9,9 +9,24 @@ def _state_map(states: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
 
 
 def _age_seconds(state: dict[str, Any] | None) -> float | None:
+    """Age of the last value/attribute change recorded by Home Assistant."""
     if not state:
         return None
     stamp = state.get("last_updated") or state.get("last_changed")
+    if not stamp:
+        return None
+    try:
+        dt = datetime.fromisoformat(stamp.replace("Z", "+00:00"))
+        return max(0.0, (datetime.now(timezone.utc) - dt).total_seconds())
+    except Exception:
+        return None
+
+
+def _reported_age_seconds(state: dict[str, Any] | None) -> float | None:
+    """Age of the last report from the integration, even if the value did not change."""
+    if not state:
+        return None
+    stamp = state.get("last_reported") or state.get("last_updated") or state.get("last_changed")
     if not stamp:
         return None
     try:
@@ -33,6 +48,7 @@ def _item(sm: dict[str, dict[str, Any]], entity_id: str | None) -> dict[str, Any
         "state": value,
         "available": value not in ("unknown", "unavailable", None),
         "age_seconds": _age_seconds(state),
+        "report_age_seconds": _reported_age_seconds(state),
         "last_updated": state.get("last_updated"),
         "last_changed": state.get("last_changed"),
         "last_reported": state.get("last_reported"),
@@ -356,10 +372,15 @@ def _discover_clever_entities(
     return resolved, discovery
 
 def _vehicle_health(items: dict[str, dict[str, Any]], freshness_key: str = "soc") -> str:
+    """Telemetry freshness, based on last_reported when Home Assistant provides it.
+
+    A stationary vehicle can keep the same SOC for hours. That must not be
+    confused with an integration which has stopped reporting.
+    """
     main = items.get(freshness_key, {})
     if not main.get("available"):
         return "down"
-    age = main.get("age_seconds")
+    age = main.get("report_age_seconds")
     if age is None:
         return "unknown"
     if age > 7200:
