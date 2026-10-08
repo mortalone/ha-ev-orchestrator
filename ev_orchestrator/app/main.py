@@ -15,7 +15,7 @@ from ha_client import HomeAssistantClient
 from model import build_snapshot
 from store import Store
 
-VERSION = "0.3.0"
+VERSION = "0.3.2"
 STATIC_DIR = Path(__file__).parent / "static"
 
 LOG_LEVEL = os.environ.get("EV_ORCH_LOG_LEVEL", "info").upper()
