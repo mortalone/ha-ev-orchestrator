@@ -33,6 +33,9 @@ def _item(sm: dict[str, dict[str, Any]], entity_id: str | None) -> dict[str, Any
         "state": value,
         "available": value not in ("unknown", "unavailable", None),
         "age_seconds": _age_seconds(state),
+        "last_updated": state.get("last_updated"),
+        "last_changed": state.get("last_changed"),
+        "last_reported": state.get("last_reported"),
         "attributes": state.get("attributes", {}),
     }
 
@@ -100,6 +103,116 @@ def _asciiish(value: Any) -> str:
         .replace("å", "a")
         .replace("æ", "ae")
     )
+
+
+def _parse_dt(value: Any) -> datetime | None:
+    if value in (None, "", "unknown", "unavailable"):
+        return None
+    try:
+        dt = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt.astimezone(timezone.utc)
+    except Exception:
+        return None
+
+
+def _provider_positive_contact(items: dict[str, dict[str, Any]]) -> dict[str, Any]:
+    """Best evidence that data/command actually reached the vehicle/provider.
+
+    This deliberately does NOT treat ordinary HA last_updated as vehicle contact.
+    Preferred evidence is a vehicle/provider timestamp exposed inside entity
+    attributes, or a completed remote command.
+    """
+    now = datetime.now(timezone.utc)
+    candidates: list[dict[str, Any]] = []
+    timestamp_keys = {
+        "last_updated", "updated_at", "last_update", "last_seen",
+        "sidst_opdateret", "senest_opdateret", "sidst_set",
+    }
+
+    for key, item in items.items():
+        attrs = item.get("attributes") or {}
+        for attr_key, attr_value in attrs.items():
+            norm_key = _asciiish(attr_key).replace(" ", "_").replace("-", "_")
+            if norm_key not in {_asciiish(x).replace(" ", "_") for x in timestamp_keys}:
+                continue
+            dt = _parse_dt(attr_value)
+            if not dt:
+                continue
+            # Ignore obviously bad future timestamps.
+            if (dt - now).total_seconds() > 300:
+                continue
+            candidates.append({
+                "timestamp": dt,
+                "source": item.get("entity_id"),
+                "evidence": f"provider timestamp: {attr_key}",
+                "confidence": "medium",
+            })
+
+    command = items.get("command_status", {})
+    command_state = _asciiish(command.get("state"))
+    success_tokens = ("udfort", "udført", "done", "success", "successful", "completed")
+    if any(token in command_state for token in success_tokens) or command_state == "0":
+        dt = _parse_dt(command.get("last_updated"))
+        if dt:
+            candidates.append({
+                "timestamp": dt,
+                "source": command.get("entity_id"),
+                "evidence": "remote command completed",
+                "confidence": "high",
+            })
+
+    if not candidates:
+        return {
+            "available": False,
+            "timestamp": None,
+            "age_seconds": None,
+            "source": None,
+            "evidence": None,
+            "confidence": None,
+        }
+
+    best = max(candidates, key=lambda x: x["timestamp"])
+    return {
+        "available": True,
+        "timestamp": best["timestamp"].isoformat(),
+        "age_seconds": max(0.0, (now - best["timestamp"]).total_seconds()),
+        "source": best["source"],
+        "evidence": best["evidence"],
+        "confidence": best["confidence"],
+    }
+
+
+def _command_contact_expectation(items: dict[str, dict[str, Any]], timeout_seconds: int = 180) -> dict[str, Any]:
+    command = items.get("command_status", {})
+    if not command.get("available"):
+        return {"state": "none", "expected": False, "age_seconds": None, "status": None}
+
+    raw = str(command.get("state") or "")
+    state = _asciiish(raw)
+    age = command.get("age_seconds")
+    pending_tokens = (
+        "accepteret", "accepted", "vaekker", "vækker", "waking",
+        "videresendt", "forwarded", "checking", "in progress", "igang",
+    )
+    success_tokens = ("udfort", "udført", "done", "success", "successful", "completed")
+    failure_tokens = ("tidsudlob", "tidsudløb", "timeout", "fejl", "failed", "error")
+
+    if any(token in state for token in pending_tokens):
+        overdue = age is not None and float(age) > timeout_seconds
+        return {
+            "state": "overdue" if overdue else "waiting",
+            "expected": True,
+            "age_seconds": age,
+            "timeout_seconds": timeout_seconds,
+            "status": raw,
+        }
+    if any(token in state for token in failure_tokens):
+        return {"state": "failed", "expected": False, "age_seconds": age, "status": raw}
+    if any(token in state for token in success_tokens) or state == "0":
+        return {"state": "success", "expected": False, "age_seconds": age, "status": raw}
+    return {"state": "idle", "expected": False, "age_seconds": age, "status": raw}
 
 
 def _object_id(entity_id: str) -> str:
@@ -509,6 +622,9 @@ def build_snapshot(states: list[dict[str, Any]], settings: dict[str, Any]) -> di
     mg_contact = _contact_summary(
         mg_items, ["soc", "connected", "charging", "tracker", "vehicle_target_soc"]
     )
+    citroen_positive_contact = _provider_positive_contact(citroen_items)
+    mg_positive_contact = _provider_positive_contact(mg_items)
+    citroen_contact_expectation = _command_contact_expectation(citroen_items, 180)
     identity = _identity_assessment(sm, citroen_items, mg_items, shared_items, identity_cfg)
 
     clever_status = "available" if any(x.get("available") for x in clever_items.values()) else "not_configured"
@@ -523,6 +639,8 @@ def build_snapshot(states: list[dict[str, Any]], settings: dict[str, Any]) -> di
             "configured_minimum_soc": c["minimum_soc"],
             "health": citroen_health,
             "last_contact": citroen_contact,
+            "positive_contact": citroen_positive_contact,
+            "contact_expectation": citroen_contact_expectation,
             "entities": citroen_items,
         },
         "mg": {
@@ -530,6 +648,8 @@ def build_snapshot(states: list[dict[str, Any]], settings: dict[str, Any]) -> di
             "configured_minimum_soc": m["minimum_soc"],
             "health": mg_health,
             "last_contact": mg_contact,
+            "positive_contact": mg_positive_contact,
+            "contact_expectation": {"state": "none", "expected": False},
             "entities": mg_items,
         },
         "identity": identity,
