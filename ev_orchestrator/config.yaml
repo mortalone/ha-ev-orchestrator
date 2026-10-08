@@ -1,5 +1,5 @@
 name: EV Orchestrator
-version: "0.3.0"
+version: "0.3.1"
 slug: ev_orchestrator
 description: >-
   Central monitor, audit and future controller for Citroën/MG charging in Home Assistant.
@@ -7,10 +7,9 @@ url: https://github.com/mortalone/ha-ev-orchestrator
 arch:
   - amd64
   - aarch64
-startup: services
+startup: application
 boot: auto
 init: false
-stage: experimental
 ingress: true
 ingress_port: 8099
 ingress_stream: true
