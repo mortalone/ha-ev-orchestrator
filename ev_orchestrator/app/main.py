@@ -15,7 +15,7 @@ from ha_client import HomeAssistantClient
 from model import build_snapshot
 from store import Store
 
-VERSION = "0.3.2"
+VERSION = "0.3.3"
 STATIC_DIR = Path(__file__).parent / "static"
 
 LOG_LEVEL = os.environ.get("EV_ORCH_LOG_LEVEL", "info").upper()
@@ -73,6 +73,10 @@ class App:
         for value in s.get("clever", {}).get("entities", {}).values():
             if isinstance(value, str) and "." in value:
                 entities.add(value)
+        for item in self.snapshot.get("clever", {}).get("entities", {}).values():
+            entity_id = item.get("entity_id") if isinstance(item, dict) else None
+            if isinstance(entity_id, str) and "." in entity_id:
+                entities.add(entity_id)
         for value in s["shared"].values():
             if isinstance(value, str) and "." in value:
                 entities.add(value)
@@ -140,7 +144,7 @@ class App:
         payload = await request.json()
         if payload.get("mode") not in (None, "monitor"):
             return web.json_response({
-                "error": "Version 0.3.0 er bevidst låst til Monitor mode. Control mode aktiveres først efter live-validering og legacy-audit er ren."
+                "error": "Version 0.3.3 er bevidst låst til Monitor mode. Control mode aktiveres først efter live-validering og legacy-audit er ren."
             }, status=400)
         self.store.save_settings(payload)
         self.snapshot = build_snapshot(self.states, self.store.settings)
